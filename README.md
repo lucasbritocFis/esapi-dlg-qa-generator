@@ -34,7 +34,7 @@ Configuration form:
 
 Generation summary:
 
-![Generation Summary](docs/img/ui-result.png)
+![Generation Summary](docs/img/ui-result_plataform.png)
 
 Field geometry diagram:
 
