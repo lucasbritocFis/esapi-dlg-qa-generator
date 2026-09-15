@@ -30,11 +30,11 @@ Eclipse's Sliding Window validation requires MLC motion across control points. R
 
 Configuration form:
 
-![Configuration Form](docs/img/ui-config.png)
+![Configuration Form](docs/img/ui-result.PNG)
 
 Generation summary:
 
-![Generation Summary](docs/img/ui-result_plataform.png)
+![Generation Summary](docs/img/ui-config_plataform.PNG)
 
 Field geometry diagram:
 
