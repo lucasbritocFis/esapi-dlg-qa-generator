@@ -103,7 +103,7 @@ The overall status is PASS only if every field passes. Any CHECK must be reviewe
 
 Configuration form:
 
-![Configuration Form](docs/img/ui-config.PNG)
+![Configuration Form](docs/img/ui-config_plataform.PNG)
 
 Generation summary:
 
