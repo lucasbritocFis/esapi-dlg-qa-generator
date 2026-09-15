@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [0.9.2] - 2026-09-15
+
+### Added
+- Leaf-speed check before plan creation (sweeping-gap and OPEN/TX fields), reporting the minimum MU.
+- Consistency check of the geometry constants before plan creation.
+- Warning to close the patient without saving when an error occurs after generation has started.
+
+### Changed
+- Generation summary now includes OPEN/TX results in the overall status.
+- Direction of the hidden OPEN/TX sweep is based on the jaw center (correct for asymmetric jaws).
+- Portable build script: paths relative to the script, version read from APP_VERSION, output in bin\.
 
 ## [0.9.1] - 2025-09-15
 
