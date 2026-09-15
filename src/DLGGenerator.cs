@@ -15,7 +15,7 @@ namespace VMS.TPS
     public class Script
     {
         // ================================================================
-        // DLG QA PLAN GENERATOR v0.9.1
+        // DLG QA PLAN GENERATOR v0.9.2
         // ESAPI 16.1 / Windows Forms
         //
         // Automated generation of:
@@ -33,6 +33,11 @@ namespace VMS.TPS
         //   remains unchanged while satisfying Sliding Window validation.
         //
         // Changelog:
+        //   v0.9.2 - Leaf-speed check before plan creation, geometry
+        //            consistency check for edited constants, summary
+        //            now includes OPEN/TX results, warning to close
+        //            without saving after a partial generation,
+        //            direction of hidden sweep based on jaw center.
         //   v0.9.1 - Null-safety check on CalculationResult, expanded
         //            documentation for non-obvious constants, removal
         //            of dead code. No change to clinical behavior.
@@ -40,7 +45,7 @@ namespace VMS.TPS
         //            professional UI, automated MU verification.
         // ================================================================
 
-        private const string APP_VERSION = "0.9.1";
+        private const string APP_VERSION = "0.9.2";
 
         // Even though the generated beams are Sliding Window IMRT beams,
         // the technique identifier passed to ExternalBeamMachineParameters
@@ -104,6 +109,18 @@ namespace VMS.TPS
         private static readonly double[] AVAILABLE_GAPS =
             new double[] { 2, 4, 6, 10, 14, 16, 20 };
 
+        // ---------------- MLC LIMITS ----------------
+        // Maximum leaf speed allowed for the generated fields (mm/s at
+        // the isocenter plane). 25 mm/s is a typical Eclipse value for
+        // Millennium 120 / HD120. Check the value configured for your
+        // MLC in RT Administration and adjust if needed.
+        private const double MAX_LEAF_SPEED_MM_S = 25.0;
+
+        // True once Patient.BeginModifications() has been called. Used to
+        // warn the user to close the patient without saving if an error
+        // occurs after generation has started.
+        private bool modificationsStarted = false;
+
         public void Execute(ScriptContext context)
         {
             try
@@ -112,7 +129,7 @@ namespace VMS.TPS
             }
             catch (Exception ex)
             {
-                ShowError(ex);
+                ShowError(ex, modificationsStarted);
             }
         }
 
@@ -144,6 +161,7 @@ namespace VMS.TPS
                 return;
 
             context.Patient.BeginModifications();
+            modificationsStarted = true;
 
             // ============================================================
             // PHANTOM + STRUCTURE SET
@@ -443,12 +461,16 @@ namespace VMS.TPS
             // treatment aperture.
             double direction = 1.0;
 
-            // For a field parked on the negative X side (TXB), move slightly
-            // farther negative instead of toward the jaw edge.
+            // For a field parked beyond the X1 jaw (TXB), move slightly
+            // farther toward X1 instead of toward the jaw edge. Comparing
+            // with the jaw center keeps this correct for asymmetric jaws.
             double center =
                 (bank0Position + bank1Position) / 2.0;
 
-            if (center < -X2)
+            double jawCenter =
+                (X1 + X2) / 2.0;
+
+            if (center < jawCenter)
                 direction = -1.0;
 
             for (
@@ -1000,6 +1022,7 @@ namespace VMS.TPS
 
             bool allGapOk = true;
             bool allCmwOk = true;
+            bool allReferenceOk = true;
 
             foreach (Beam b in createdBeams)
             {
@@ -1013,6 +1036,11 @@ namespace VMS.TPS
 
                     bool refCmwOk =
                         ValidateCmw(b);
+
+                    allReferenceOk =
+                        allReferenceOk &&
+                        refGeometryOk &&
+                        refCmwOk;
 
                     sb.AppendLine(
                         "  [" +
@@ -1097,6 +1125,14 @@ namespace VMS.TPS
                 ));
 
             sb.AppendLine(
+                "Reference fields (OPEN/TX): " +
+                (
+                    allReferenceOk
+                    ? "PASS"
+                    : "CHECK"
+                ));
+
+            sb.AppendLine(
                 "CMW sequence: " +
                 (
                     allCmwOk
@@ -1122,7 +1158,7 @@ namespace VMS.TPS
             ResultForm.ShowResult(
                 "DLG QA Plan Generator",
                 sb.ToString(),
-                allGapOk && allCmwOk
+                allGapOk && allCmwOk && allReferenceOk
             );
         }
 
@@ -1212,7 +1248,116 @@ namespace VMS.TPS
                 input.SelectedGaps.Count == 0)
                 throw new ApplicationException(
                     "Select at least one sweeping gap.");
+
+            // Geometry constants may have been edited by the user.
+            ValidateGeometryConstants(input.SelectedGaps);
+
+            // Leaf speed. Every leaf of a sweeping-gap field travels
+            // SWEEP_END - SWEEP_START, whatever the gap. OPEN/TX leaves
+            // travel only the hidden sweep.
+            CheckLeafSpeed(
+                "sweeping-gap",
+                SWEEP_END - SWEEP_START,
+                input.MuDlg,
+                input.DoseRate);
+
+            CheckLeafSpeed(
+                "OPEN reference",
+                REFERENCE_HIDDEN_SWEEP_MM,
+                input.MuOpen,
+                input.DoseRate);
+
+            CheckLeafSpeed(
+                "transmission A/B",
+                REFERENCE_HIDDEN_SWEEP_MM,
+                input.MuTx,
+                input.DoseRate);
         }
+
+        private static void CheckLeafSpeed(
+            string fieldLabel,
+            double travelMm,
+            int mu,
+            int doseRate)
+        {
+            // Minimum MU that keeps the leaf speed within the limit:
+            //   time  = MU / (doseRate / 60)
+            //   speed = travel / time
+            //   speed <= limit  ->  MU >= travel * doseRate / (60 * limit)
+            // The decision compares integers (MU), so there is no
+            // floating-point ambiguity exactly at the limit.
+            double minMu = Math.Ceiling(
+                travelMm * doseRate / (60.0 * MAX_LEAF_SPEED_MM_S));
+
+            if (mu >= minMu)
+                return;
+
+            double seconds = mu / (doseRate / 60.0);
+            double speed = travelMm / seconds;
+
+            throw new ApplicationException(
+                "Leaf speed too high in the " + fieldLabel + " field(s).\r\n\r\n" +
+                "Travel: " + travelMm.ToString("0.0") + " mm in " +
+                seconds.ToString("0.0") + " s (" + mu + " MU at " +
+                doseRate + " MU/min)\r\n" +
+                "Leaf speed: " + speed.ToString("0.0") + " mm/s " +
+                "(limit " + MAX_LEAF_SPEED_MM_S.ToString("0.0") + " mm/s)\r\n\r\n" +
+                "Use at least " + minMu.ToString("0") + " MU for these fields " +
+                "or reduce the dose rate.\r\n\r\n" +
+                "The limit is set by MAX_LEAF_SPEED_MM_S. Check the value " +
+                "configured for your MLC.");
+        }
+
+        // The checks below compare compile-time constants, so the C#
+        // compiler reports "unreachable code" while the geometry is
+        // consistent. The warning is expected and silenced here.
+#pragma warning disable 0162
+        private static void ValidateGeometryConstants(
+            List<double> selectedGaps)
+        {
+            List<string> problems = new List<string>();
+
+            if (X1 >= X2 || Y1 >= Y2)
+                problems.Add("Jaw positions must satisfy X1 < X2 and Y1 < Y2.");
+
+            if (N_STEPS < 2)
+                problems.Add("N_STEPS must be at least 2.");
+
+            // Sweeping gap must start fully behind X1 and end fully
+            // behind X2, for the largest selected gap.
+            double maxGap = selectedGaps.Max();
+
+            if (SWEEP_START + maxGap / 2.0 > X1)
+                problems.Add(
+                    "At SWEEP_START the " + maxGap.ToString("0") +
+                    " mm gap is not fully behind the X1 jaw.");
+
+            if (SWEEP_END - maxGap / 2.0 < X2)
+                problems.Add(
+                    "At SWEEP_END the " + maxGap.ToString("0") +
+                    " mm gap is not fully behind the X2 jaw.");
+
+            // OPEN: the hidden sweep moves one leaf tip toward a jaw edge,
+            // so the padding must be larger than the sweep.
+            if (OPEN_MLC_PADDING_MM <= REFERENCE_HIDDEN_SWEEP_MM)
+                problems.Add(
+                    "OPEN_MLC_PADDING_MM must be larger than " +
+                    "REFERENCE_HIDDEN_SWEEP_MM, otherwise a leaf tip " +
+                    "can enter the jaw aperture.");
+
+            // TX: the inner leaf tip must stay behind the jaw.
+            if (TX_OVERREACH_MM - TX_STRIP_WIDTH_MM / 2.0 <= 0.0)
+                problems.Add(
+                    "TX_OVERREACH_MM must be larger than half of " +
+                    "TX_STRIP_WIDTH_MM, otherwise the transmission strip " +
+                    "enters the jaw aperture.");
+
+            if (problems.Count > 0)
+                throw new ApplicationException(
+                    "Inconsistent geometry constants in DLGGenerator.cs:\r\n\r\n- " +
+                    string.Join("\r\n- ", problems.ToArray()));
+        }
+#pragma warning restore 0162
 
         private static bool ShowGenerationConfirmation(
             UserInput input)
@@ -1551,10 +1696,21 @@ namespace VMS.TPS
         }
 
         private static void ShowError(
-            Exception ex)
+            Exception ex,
+            bool modificationsStarted)
         {
+            string message = ex.ToString();
+
+            if (modificationsStarted)
+                message =
+                    "The QA plan was only partially generated.\r\n" +
+                    "Close the patient WITHOUT saving to discard the " +
+                    "incomplete phantom, course and plan.\r\n\r\n" +
+                    "----------------------------------------\r\n\r\n" +
+                    message;
+
             MessageBox.Show(
-                ex.ToString(),
+                message,
                 "DLG QA Plan Generator - Error",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error
